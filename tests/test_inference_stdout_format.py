@@ -2,8 +2,6 @@
 
 import io
 import os
-import re
-import sys
 from contextlib import redirect_stdout
 
 import inference as inf
@@ -42,20 +40,20 @@ def test_one_line_action_newlines_collapsed():
     assert "action=a b" in buf.getvalue()
 
 
-def test_api_key_prefers_injected_api_key(monkeypatch):
-    """Validators inject API_KEY for LiteLLM; HF_TOKEN must not override."""
-    monkeypatch.setenv("API_KEY", "proxy-llm-key")
-    monkeypatch.setenv("HF_TOKEN", "hf-hub-token")
+def test_api_key_hf_token_takes_precedence(monkeypatch):
+    """Sample script uses: os.getenv('HF_TOKEN') or os.getenv('API_KEY')."""
+    monkeypatch.setenv("HF_TOKEN", "hf-proxy-key")
+    monkeypatch.setenv("API_KEY", "api-key-val")
     import importlib
 
     importlib.reload(inf)
-    assert inf.API_KEY == "proxy-llm-key"
+    assert inf.API_KEY == "hf-proxy-key"
 
 
-def test_api_key_falls_back_to_hf_token(monkeypatch):
-    monkeypatch.delenv("API_KEY", raising=False)
-    monkeypatch.setenv("HF_TOKEN", "hf-test")
+def test_api_key_falls_back_to_api_key_env(monkeypatch):
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.setenv("API_KEY", "fallback-key")
     import importlib
 
     importlib.reload(inf)
-    assert inf.API_KEY == "hf-test"
+    assert inf.API_KEY == "fallback-key"

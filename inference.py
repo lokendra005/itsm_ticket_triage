@@ -1,11 +1,8 @@
 """
 Baseline inference for Support Triage OpenEnv.
 
-Uses the OpenAI client with:
-  base_url = os.environ["API_BASE_URL"]
-  api_key  = os.environ["API_KEY"]
-
-Participants must use OpenAI Client for all LLM calls using above variables.
+Participants must use OpenAI Client for all LLM calls.
+The competition injects API_BASE_URL, MODEL_NAME, and HF_TOKEN / API_KEY.
 """
 
 from __future__ import annotations
@@ -14,25 +11,22 @@ import asyncio
 import os
 import re
 import sys
+import traceback
 from typing import List, Optional
 
 from openai import OpenAI
 
 from support_triage_env import SupportAction, SupportTriageEnv, TASK_ORDER
 
-# ── LLM config (competition injects API_BASE_URL + API_KEY) ──────────────────
+# ── Config (read at import time; also re-read at runtime for safety) ──────────
 API_BASE_URL = os.getenv("API_BASE_URL", "https://api.openai.com/v1")
 MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4o-mini")
-API_KEY = os.getenv("API_KEY") or os.getenv("HF_TOKEN")
-
-# ── Env config ────────────────────────────────────────────────────────────────
+API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
+IMAGE_NAME = os.getenv("IMAGE_NAME") or os.getenv("LOCAL_IMAGE_NAME") or os.getenv("OPENENV_IMAGE")
 BENCHMARK = os.getenv("OPENENV_BENCHMARK_NAME", "support_triage_openenv")
 SUCCESS_SCORE_THRESHOLD = float(os.getenv("SUCCESS_SCORE_THRESHOLD", "0.65"))
 OPENENV_BASE_URL = os.getenv("OPENENV_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
-IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME") or os.getenv("IMAGE_NAME") or os.getenv("OPENENV_IMAGE")
 
-
-# ── Stdout helpers (strict format for automated scoring) ──────────────────────
 
 def _one_line(s: str) -> str:
     return re.sub(r"[\r\n]+", " ", s).strip()
@@ -57,7 +51,7 @@ def log_end(*, success: bool, steps: int, score: float, rewards: List[float]) ->
     print(f"[END] success={s} steps={steps} score={sc} rewards={rs}", flush=True)
 
 
-# ── LLM call (NO silent error swallowing) ─────────────────────────────────────
+# ── LLM ───────────────────────────────────────────────────────────────────────
 
 def _user_prompt_for_obs(obs, last_reward: float, history: List[str]) -> str:
     chunks = [
@@ -100,9 +94,6 @@ def get_model_message(
     else:
         user = f"Observation summary: {last_echoed}\nLast reward: {last_reward:.2f}\nStep: {step}"
 
-    # Do NOT catch exceptions here — if the proxy is unreachable or the key
-    # is wrong, we MUST fail loudly so the grading harness sees real errors
-    # instead of silently running steps with dummy responses.
     resp = client.chat.completions.create(
         model=MODEL_NAME,
         temperature=0.0,
@@ -119,7 +110,7 @@ def get_model_message(
 
 # ── Episode runner ─────────────────────────────────────────────────────────────
 
-async def run_one_task(task_name: str) -> None:
+async def run_one_task(task_name: str, client: OpenAI) -> None:
     history: List[str] = []
     rewards: List[float] = []
     steps_taken = 0
@@ -130,13 +121,6 @@ async def run_one_task(task_name: str) -> None:
     log_start(task=task_name, env=BENCHMARK, model=MODEL_NAME)
 
     try:
-        # Exactly as the competition instructions require:
-        #   OpenAI(base_url=os.environ["API_BASE_URL"], api_key=os.environ["API_KEY"])
-        client = OpenAI(
-            base_url=os.environ["API_BASE_URL"],
-            api_key=os.environ["API_KEY"],
-        )
-
         if IMAGE_NAME:
             env = await SupportTriageEnv.from_docker_image(IMAGE_NAME)
         else:
@@ -186,7 +170,8 @@ async def run_one_task(task_name: str) -> None:
         success = score >= SUCCESS_SCORE_THRESHOLD
 
     except Exception as exc:
-        print(f"[ERROR] {exc}", file=sys.stderr, flush=True)
+        print(f"[ERROR] task={task_name}: {exc}", file=sys.stderr, flush=True)
+        traceback.print_exc(file=sys.stderr)
         success = False
         if not rewards:
             score = 0.0
@@ -201,18 +186,37 @@ async def run_one_task(task_name: str) -> None:
 
 
 async def main() -> None:
-    # Debug: show which LLM endpoint and key prefix we're actually using
-    print(
-        f"[CONFIG] API_BASE_URL={os.environ.get('API_BASE_URL', '<unset>')!r} "
-        f"API_KEY={os.environ.get('API_KEY', '<unset>')[:8] + '...' if os.environ.get('API_KEY') else '<unset>'!r} "
-        f"MODEL_NAME={MODEL_NAME!r} "
-        f"OPENENV_BASE_URL={OPENENV_BASE_URL!r} "
-        f"IMAGE_NAME={IMAGE_NAME!r}",
-        file=sys.stderr,
-        flush=True,
+    # ── Resolve key: HF_TOKEN first (matches sample), then API_KEY ────────
+    api_key = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
+    api_base = os.getenv("API_BASE_URL", "https://api.openai.com/v1")
+    model = os.getenv("MODEL_NAME", "gpt-4o-mini")
+
+    # Dump every relevant env var so the validator log shows what we see
+    _dbg = (
+        f"API_BASE_URL={api_base!r}  "
+        f"MODEL_NAME={model!r}  "
+        f"API_KEY={(api_key or '<NONE>')[:12]}...  "
+        f"HF_TOKEN={('set' if os.getenv('HF_TOKEN') else 'unset')}  "
+        f"API_KEY_env={('set' if os.getenv('API_KEY') else 'unset')}  "
+        f"IMAGE_NAME={IMAGE_NAME!r}  "
+        f"OPENENV_BASE_URL={OPENENV_BASE_URL!r}"
     )
+    print(f"[CONFIG] {_dbg}", file=sys.stderr, flush=True)
+
+    # Hard-fail if no key — do NOT let this be caught silently per-task
+    if not api_key:
+        print("FATAL: Neither HF_TOKEN nor API_KEY is set. Cannot call LLM proxy.", file=sys.stderr, flush=True)
+        sys.exit(1)
+
+    # Create client ONCE, OUTSIDE per-task try/except.
+    # If this fails (bad URL, missing deps), the script crashes with a traceback
+    # and the validator shows "inference.py Execution ✗" — much better than
+    # silently producing valid output with zero proxy calls.
+    client = OpenAI(base_url=api_base, api_key=api_key)
+    print(f"[CONFIG] OpenAI client created: base_url={client.base_url}", file=sys.stderr, flush=True)
+
     for task in TASK_ORDER:
-        await run_one_task(task)
+        await run_one_task(task, client)
 
 
 if __name__ == "__main__":
