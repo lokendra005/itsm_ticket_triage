@@ -17,6 +17,18 @@ app = create_app(
 )
 
 
+@app.get("/")
+def _space_root():
+    """HF / browsers often probe `/`; OpenEnv lives under /health, /reset, /docs, /ws."""
+    return {
+        "service": "support_triage_openenv",
+        "health": "/health",
+        "reset": "POST /reset",
+        "docs": "/docs",
+        "schema": "/schema",
+    }
+
+
 def main() -> None:
     import uvicorn
 
