@@ -2,9 +2,10 @@
 Baseline inference for Support Triage OpenEnv.
 
 MANDATORY env (per competition sample):
-  API_BASE_URL     LLM endpoint (default: https://api.openai.com/v1)
+  API_BASE_URL     LLM endpoint (default: https://api.openai.com/v1); use validator-injected LiteLLM URL when present
   MODEL_NAME       Model id (default: gpt-4o-mini)
-  HF_TOKEN         API key (or API_KEY); OpenAI client api_key
+  API_KEY          Preferred LLM key (competition validators inject this for the LiteLLM proxy)
+  HF_TOKEN         Fallback API key for local / HF (Hub token must NOT win over API_KEY for LLM calls)
   LOCAL_IMAGE_NAME Optional; docker image for from_docker_image() (alias: IMAGE_NAME, OPENENV_IMAGE)
   OPENENV_BASE_URL Space / server URL when not using docker (no trailing slash)
 
@@ -29,12 +30,15 @@ from openenv.core.utils import run_async_safely
 
 from support_triage_env import SupportAction, SupportTriageEnv, TASK_ORDER
 
-API_BASE_URL = os.environ.get("API_BASE_URL", "https://api.openai.com/v1")
+_raw_base = os.environ.get("API_BASE_URL", "").strip()
+API_BASE_URL = _raw_base or "https://api.openai.com/v1"
 MODEL_NAME = os.environ.get("MODEL_NAME", "gpt-4o-mini")
+# API_KEY must take precedence: HF Spaces set HF_TOKEN to the *Hub* token; using it against the
+# LiteLLM proxy bypasses grading ("no API calls on the provided API key").
 API_KEY = (
-    os.environ.get("HF_TOKEN", "").strip()
-    or os.environ.get("API_KEY", "").strip()
+    os.environ.get("API_KEY", "").strip()
     or os.environ.get("OPENAI_API_KEY", "").strip()
+    or os.environ.get("HF_TOKEN", "").strip()
 )
 BENCHMARK = os.environ.get("OPENENV_BENCHMARK_NAME", "support_triage_openenv")
 SUCCESS_SCORE_THRESHOLD = float(os.environ.get("SUCCESS_SCORE_THRESHOLD", "0.65"))
@@ -157,7 +161,7 @@ async def run_one_task(task_name: str) -> None:
 
     try:
         if not API_KEY:
-            raise RuntimeError("HF_TOKEN or API_KEY or OPENAI_API_KEY must be set for inference.")
+            raise RuntimeError("API_KEY, OPENAI_API_KEY, or HF_TOKEN must be set for inference.")
 
         client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
 

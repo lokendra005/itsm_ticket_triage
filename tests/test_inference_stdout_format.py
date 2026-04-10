@@ -41,8 +41,18 @@ def test_one_line_action_newlines_collapsed():
     assert "action=a b" in buf.getvalue()
 
 
-def test_api_key_prefers_hf_token(monkeypatch):
-    monkeypatch.delenv("HF_TOKEN", raising=False)
+def test_api_key_prefers_injected_proxy_key(monkeypatch):
+    """Validators inject API_KEY for LiteLLM; HF_TOKEN is often the Hub token and must not override."""
+    monkeypatch.setenv("HF_TOKEN", "hf-hub-token")
+    monkeypatch.setenv("API_KEY", "proxy-llm-key")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    import importlib
+
+    importlib.reload(inf)
+    assert inf.API_KEY == "proxy-llm-key"
+
+
+def test_api_key_falls_back_to_hf_token(monkeypatch):
     monkeypatch.delenv("API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setenv("HF_TOKEN", "hf-test")
