@@ -1,20 +1,18 @@
 """
 Baseline inference for Support Triage OpenEnv.
 
-Structured logs (exact keys):
-  [START] task=... env=... model=...
-  [STEP] step=... action=... reward=... done=... error=...
-  [END] success=... steps=... score=... rewards=...
+MANDATORY env (per competition sample):
+  API_BASE_URL     LLM endpoint (default: https://api.openai.com/v1)
+  MODEL_NAME       Model id (default: gpt-4o-mini)
+  HF_TOKEN         API key (or API_KEY); OpenAI client api_key
+  LOCAL_IMAGE_NAME Optional; docker image for from_docker_image() (alias: IMAGE_NAME, OPENENV_IMAGE)
+  OPENENV_BASE_URL Space / server URL when not using docker (no trailing slash)
 
-Environment variables:
-  API_BASE_URL      LLM endpoint (default: https://api.openai.com/v1)
-  MODEL_NAME        Model id (default: gpt-4o-mini)
-  OPENAI_API_KEY    Preferred API key for OpenAI-compatible servers
-  HF_TOKEN          Fallback API key if OPENAI_API_KEY is unset
-  OPENENV_BASE_URL  Running Space / server URL (http(s)://...) when not using Docker
-  IMAGE_NAME        Same as OPENENV_IMAGE (sample / eval compatibility)
-  OPENENV_IMAGE     Local image tag for from_docker_image()
-  OPENENV_USE_DOCKER Set to 1 to force Docker even if IMAGE_NAME unset
+STDOUT (exact line types; reward/score 2 decimals; done/success lowercase true/false;
+ rewards comma-separated; error=null or raw one-line string):
+  [START] task=<task_name> env=<benchmark> model=<model_name>
+  [STEP]  step=<n> action=<action_str> reward=<0.00> done=<true|false> error=<msg|null>
+  [END]   success=<true|false> steps=<n> score=<0.00> rewards=<r1,r2,...>
 """
 
 from __future__ import annotations
@@ -22,39 +20,67 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
+import sys
 from typing import List, Optional
 
 from openai import OpenAI
+from openenv.core.utils import run_async_safely
 
 from support_triage_env import SupportAction, SupportTriageEnv, TASK_ORDER
 
 API_BASE_URL = os.environ.get("API_BASE_URL", "https://api.openai.com/v1")
 MODEL_NAME = os.environ.get("MODEL_NAME", "gpt-4o-mini")
-API_KEY = os.environ.get("OPENAI_API_KEY") or os.environ.get("HF_TOKEN", "")
+API_KEY = (
+    os.environ.get("HF_TOKEN", "").strip()
+    or os.environ.get("API_KEY", "").strip()
+    or os.environ.get("OPENAI_API_KEY", "").strip()
+)
 BENCHMARK = os.environ.get("OPENENV_BENCHMARK_NAME", "support_triage_openenv")
 SUCCESS_SCORE_THRESHOLD = float(os.environ.get("SUCCESS_SCORE_THRESHOLD", "0.65"))
 OPENENV_BASE_URL = os.environ.get("OPENENV_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
 IMAGE_NAME = (
-    os.environ.get("IMAGE_NAME", "").strip()
+    os.environ.get("LOCAL_IMAGE_NAME", "").strip()
+    or os.environ.get("IMAGE_NAME", "").strip()
     or os.environ.get("OPENENV_IMAGE", "").strip()
 )
 USE_DOCKER = os.environ.get("OPENENV_USE_DOCKER", "").lower() in ("1", "true", "yes")
 
 
+def _one_line(s: str) -> str:
+    return re.sub(r"[\r\n]+", " ", s).strip()
+
+
 def log_start(*, task: str, env: str, model: str) -> None:
-    print(f"[START] task={task!r} env={env!r} model={model!r}", flush=True)
+    # No Python repr quotes — match sample: task=name env=name model=name
+    print(f"[START] task={task} env={env} model={model}", flush=True)
 
 
 def log_step(*, step: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
-    err_lit = "null" if error is None else json.dumps(error)
-    print(
-        f"[STEP] step={step} action={action!r} reward={reward:+.4f} done={done} error={err_lit}",
-        flush=True,
-    )
+    a = _one_line(action)
+    r = f"{float(reward):.2f}"
+    d = "true" if done else "false"
+    if error is None:
+        e = "null"
+    else:
+        e = _one_line(error)
+    print(f"[STEP] step={step} action={a} reward={r} done={d} error={e}", flush=True)
 
 
 def log_end(*, success: bool, steps: int, score: float, rewards: List[float]) -> None:
-    print(f"[END] success={success} steps={steps} score={score:.4f} rewards={rewards}", flush=True)
+    s = "true" if success else "false"
+    parts: List[str] = []
+    for x in rewards:
+        try:
+            parts.append(f"{float(x):.2f}")
+        except (TypeError, ValueError):
+            parts.append("0.00")
+    rs = ",".join(parts)
+    try:
+        sc = f"{float(score):.2f}"
+    except (TypeError, ValueError):
+        sc = "0.00"
+    print(f"[END] success={s} steps={int(steps)} score={sc} rewards={rs}", flush=True)
 
 
 def _user_prompt_for_obs(obs, last_reward: float, history: List[str]) -> str:
@@ -70,7 +96,7 @@ def _user_prompt_for_obs(obs, last_reward: float, history: List[str]) -> str:
     if obs.macro_menu:
         chunks.append("--- MACROS ---\n" + obs.macro_menu)
     chunks.append(f"environment_feedback={obs.feedback!r}")
-    chunks.append(f"last_step_reward={last_reward:+.4f}")
+    chunks.append(f"last_step_reward={last_reward:.2f}")
     if history:
         chunks.append("--- HISTORY ---\n" + "\n".join(history[-8:]))
     chunks.append(
@@ -96,16 +122,23 @@ def get_model_message(
     if obs is not None:
         user = _user_prompt_for_obs(obs, last_reward, history)
     else:
-        user = f"Observation summary: {last_echoed!r}\nLast reward: {last_reward:+.4f}\nStep: {step}"
+        user = f"Observation summary: {last_echoed}\nLast reward: {last_reward:.2f}\nStep: {step}"
 
-    resp = client.chat.completions.create(
-        model=MODEL_NAME,
-        temperature=0.0,
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-    )
+    try:
+        resp = client.chat.completions.create(
+            model=MODEL_NAME,
+            temperature=0.0,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+        )
+    except Exception as exc:
+        err = _one_line(str(exc))[:500]
+        return json.dumps({"reason": "llm_error", "detail": err, "finalize": False})
+
+    if not resp.choices:
+        return '{"reason":"no_choices","finalize":false}'
     choice = resp.choices[0].message.content
     if not choice:
         return '{"reason":"empty_model","finalize":false}'
@@ -113,34 +146,33 @@ def get_model_message(
 
 
 async def run_one_task(task_name: str) -> None:
-    if not API_KEY:
-        raise RuntimeError("OPENAI_API_KEY or HF_TOKEN must be set for inference.")
-
-    client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
     history: List[str] = []
     rewards: List[float] = []
     steps_taken = 0
     score = 0.0
     success = False
+    env: Optional[SupportTriageEnv] = None
 
     log_start(task=task_name, env=BENCHMARK, model=MODEL_NAME)
 
-    env: SupportTriageEnv
-    if IMAGE_NAME:
-        env = await SupportTriageEnv.from_docker_image(IMAGE_NAME)
-    elif USE_DOCKER:
-        raise RuntimeError("OPENENV_USE_DOCKER=1 requires IMAGE_NAME or OPENENV_IMAGE.")
-    else:
-        env = SupportTriageEnv(base_url=OPENENV_BASE_URL)
-        await env.connect()
-
     try:
+        if not API_KEY:
+            raise RuntimeError("HF_TOKEN or API_KEY or OPENAI_API_KEY must be set for inference.")
+
+        client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+
+        if IMAGE_NAME:
+            env = await SupportTriageEnv.from_docker_image(IMAGE_NAME)
+        elif USE_DOCKER:
+            raise RuntimeError("OPENENV_USE_DOCKER=1 requires LOCAL_IMAGE_NAME or IMAGE_NAME or OPENENV_IMAGE.")
+        else:
+            env = SupportTriageEnv(base_url=OPENENV_BASE_URL)
+            await env.connect()
+
         result = await env.reset(task=task_name)
         last_echoed = result.observation.echoed_message
         last_reward = 0.0
         obs = result.observation
-
-        # max steps from observation after reset (task-specific)
         max_steps = max(4, obs.max_steps)
 
         for step in range(1, max_steps + 1):
@@ -156,7 +188,7 @@ async def run_one_task(task_name: str) -> None:
             except Exception as exc:
                 err = str(exc)
                 log_step(step=step, action=message, reward=0.0, done=False, error=err)
-                history.append(f"Step {step}: error {err!r}")
+                history.append(f"Step {step}: error {err}")
                 break
 
             obs = result.observation
@@ -170,21 +202,26 @@ async def run_one_task(task_name: str) -> None:
 
             log_step(step=step, action=message, reward=reward, done=done, error=None)
 
-            history.append(f"Step {step}: {message!r} -> reward {reward:+.2f}")
+            history.append(f"Step {step}: reward {reward:.2f}")
 
             if done:
                 break
 
-        # Episode score = cumulative shaped reward, clamped (same scale as per-step rewards).
         score = float(sum(rewards))
         score = min(max(score, 0.0), 1.0)
         success = score >= SUCCESS_SCORE_THRESHOLD
 
+    except Exception as exc:
+        print(f"[DEBUG] run_one_task error: {exc}", file=sys.stderr, flush=True)
+        success = False
+        if not rewards:
+            score = 0.0
     finally:
-        try:
-            await env.close()
-        except Exception as exc:
-            print(f"[DEBUG] env.close() error (container cleanup): {exc}", flush=True)
+        if env is not None:
+            try:
+                await env.close()
+            except Exception as exc:
+                print(f"[DEBUG] env.close() error (container cleanup): {exc}", file=sys.stderr, flush=True)
 
     log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
 
@@ -195,4 +232,6 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    # Validators may invoke this script under an already-running event loop;
+    # asyncio.run() raises RuntimeError in that case. OpenEnv provides a safe runner.
+    run_async_safely(main())
