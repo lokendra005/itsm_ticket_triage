@@ -1,7 +1,6 @@
 """Grading-style checks for inference.py stdout format (no live LLM / env)."""
 
 import io
-import os
 from contextlib import redirect_stdout
 
 import inference as inf
@@ -40,20 +39,20 @@ def test_one_line_action_newlines_collapsed():
     assert "action=a b" in buf.getvalue()
 
 
-def test_api_key_prefers_api_key_over_hf_token(monkeypatch):
-    """Validator injects API_KEY for the LiteLLM proxy."""
-    monkeypatch.setenv("API_KEY", "proxy-key")
-    monkeypatch.setenv("HF_TOKEN", "hf-hub-token")
+def test_api_key_matches_sample_priority(monkeypatch):
+    """Sample uses: os.getenv('HF_TOKEN') or os.getenv('API_KEY')."""
+    monkeypatch.setenv("HF_TOKEN", "hf-proxy-key")
+    monkeypatch.setenv("API_KEY", "other-key")
     import importlib
 
     importlib.reload(inf)
-    assert inf.API_KEY == "proxy-key"
+    assert inf.API_KEY == "hf-proxy-key"
 
 
-def test_api_key_falls_back_to_hf_token(monkeypatch):
-    monkeypatch.delenv("API_KEY", raising=False)
-    monkeypatch.setenv("HF_TOKEN", "hf-test")
+def test_api_key_falls_back_to_api_key(monkeypatch):
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.setenv("API_KEY", "fallback")
     import importlib
 
     importlib.reload(inf)
-    assert inf.API_KEY == "hf-test"
+    assert inf.API_KEY == "fallback"
