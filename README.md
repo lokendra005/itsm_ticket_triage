@@ -70,6 +70,19 @@ docker run --rm -p 7860:7860 -e PORT=7860 support-triage-openenv
 
 Pre-submission check (example): `curl -s -X POST -H 'Content-Type: application/json' -d '{}' http://127.0.0.1:7860/reset`
 
+## Deploy to Hugging Face Spaces
+
+**Option A — Link GitHub (no HF git token in terminal):** In the Space **Settings → Repository**, connect `lokendra005/itsm_ticket_triage` branch `main`. Hugging Face rebuilds when you push to GitHub.
+
+**Option B — Push from this clone with a write token** (keep the token in your shell only; never commit it):
+
+```bash
+export HF_TOKEN='hf_...'   # https://huggingface.co/settings/tokens
+bash scripts/push_hf_space.sh
+```
+
+The Space must use the **Docker** SDK and match repo id `lokiii005/ITSM_ticket_triage` (adjust the script if your Space name differs).
+
 ## Baseline inference
 
 Requires an OpenAI-compatible HTTP API:
