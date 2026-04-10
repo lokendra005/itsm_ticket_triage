@@ -30,16 +30,58 @@ from openenv.core.utils import run_async_safely
 
 from support_triage_env import SupportAction, SupportTriageEnv, TASK_ORDER
 
-_raw_base = os.environ.get("API_BASE_URL", "").strip()
-API_BASE_URL = _raw_base or "https://api.openai.com/v1"
+
+def _competition_llm_env_ready() -> bool:
+    """True when the harness injected both LiteLLM vars with non-empty values."""
+    return bool(os.environ.get("API_BASE_URL", "").strip()) and bool(os.environ.get("API_KEY", "").strip())
+
+
+def _sync_openai_sdk_env_from_competition_vars() -> None:
+    """Normalize API_* and mirror to OPENAI_* so the SDK and LiteLLM harness see the same endpoint/key."""
+    os.environ["API_BASE_URL"] = os.environ["API_BASE_URL"].strip()
+    os.environ["API_KEY"] = os.environ["API_KEY"].strip()
+    os.environ["OPENAI_BASE_URL"] = os.environ["API_BASE_URL"]
+    os.environ["OPENAI_API_KEY"] = os.environ["API_KEY"]
+
+
+def build_openai_client() -> OpenAI:
+    """
+    LLM criteria check: use os.environ['API_BASE_URL'] and os.environ['API_KEY'].
+
+    Local / HF dev: fall back when those are unset (see README).
+    """
+    if _competition_llm_env_ready():
+        _sync_openai_sdk_env_from_competition_vars()
+        # Literal subscripts match competition instructions; values normalized above.
+        return OpenAI(
+            base_url=os.environ["API_BASE_URL"],
+            api_key=os.environ["API_KEY"],
+        )
+
+    base = os.environ.get("API_BASE_URL", "").strip() or "https://api.openai.com/v1"
+    key = (
+        os.environ.get("API_KEY", "").strip()
+        or os.environ.get("OPENAI_API_KEY", "").strip()
+        or os.environ.get("HF_TOKEN", "").strip()
+    )
+    if not key:
+        raise RuntimeError("Set API_KEY and API_BASE_URL (grading) or API_KEY/HF_TOKEN for local runs.")
+    return OpenAI(base_url=base, api_key=key)
+
+
+# Snapshot for tests / introspection (import-time; re-run importlib.reload after changing env).
+if _competition_llm_env_ready():
+    API_BASE_URL = os.environ["API_BASE_URL"].strip()
+    API_KEY = os.environ["API_KEY"].strip()
+else:
+    API_BASE_URL = os.environ.get("API_BASE_URL", "").strip() or "https://api.openai.com/v1"
+    API_KEY = (
+        os.environ.get("API_KEY", "").strip()
+        or os.environ.get("OPENAI_API_KEY", "").strip()
+        or os.environ.get("HF_TOKEN", "").strip()
+    )
+
 MODEL_NAME = os.environ.get("MODEL_NAME", "gpt-4o-mini")
-# API_KEY must take precedence: HF Spaces set HF_TOKEN to the *Hub* token; using it against the
-# LiteLLM proxy bypasses grading ("no API calls on the provided API key").
-API_KEY = (
-    os.environ.get("API_KEY", "").strip()
-    or os.environ.get("OPENAI_API_KEY", "").strip()
-    or os.environ.get("HF_TOKEN", "").strip()
-)
 BENCHMARK = os.environ.get("OPENENV_BENCHMARK_NAME", "support_triage_openenv")
 SUCCESS_SCORE_THRESHOLD = float(os.environ.get("SUCCESS_SCORE_THRESHOLD", "0.65"))
 OPENENV_BASE_URL = os.environ.get("OPENENV_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
@@ -160,10 +202,7 @@ async def run_one_task(task_name: str) -> None:
     log_start(task=task_name, env=BENCHMARK, model=MODEL_NAME)
 
     try:
-        if not API_KEY:
-            raise RuntimeError("API_KEY, OPENAI_API_KEY, or HF_TOKEN must be set for inference.")
-
-        client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+        client = build_openai_client()
 
         if IMAGE_NAME:
             env = await SupportTriageEnv.from_docker_image(IMAGE_NAME)

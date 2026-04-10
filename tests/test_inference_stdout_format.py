@@ -1,9 +1,11 @@
 """Grading-style checks for inference.py stdout format (no live LLM / env)."""
 
 import io
+import os
 import re
 import sys
 from contextlib import redirect_stdout
+from unittest.mock import MagicMock, patch
 
 import inference as inf
 
@@ -60,3 +62,17 @@ def test_api_key_falls_back_to_hf_token(monkeypatch):
 
     importlib.reload(inf)
     assert inf.API_KEY == "hf-test"
+
+
+def test_competition_client_normalizes_and_syncs_openai_env(monkeypatch):
+    monkeypatch.setenv("API_BASE_URL", " https://proxy.example/v1 ")
+    monkeypatch.setenv("API_KEY", " sk-proxy ")
+    import importlib
+
+    importlib.reload(inf)
+    with patch.object(inf, "OpenAI", MagicMock()):
+        inf.build_openai_client()
+    assert os.environ["API_BASE_URL"] == "https://proxy.example/v1"
+    assert os.environ["API_KEY"] == "sk-proxy"
+    assert os.environ["OPENAI_BASE_URL"] == "https://proxy.example/v1"
+    assert os.environ["OPENAI_API_KEY"] == "sk-proxy"
