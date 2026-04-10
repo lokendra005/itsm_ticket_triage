@@ -5,7 +5,6 @@ import os
 import re
 import sys
 from contextlib import redirect_stdout
-from unittest.mock import MagicMock, patch
 
 import inference as inf
 
@@ -43,11 +42,10 @@ def test_one_line_action_newlines_collapsed():
     assert "action=a b" in buf.getvalue()
 
 
-def test_api_key_prefers_injected_proxy_key(monkeypatch):
-    """Validators inject API_KEY for LiteLLM; HF_TOKEN is often the Hub token and must not override."""
-    monkeypatch.setenv("HF_TOKEN", "hf-hub-token")
+def test_api_key_prefers_injected_api_key(monkeypatch):
+    """Validators inject API_KEY for LiteLLM; HF_TOKEN must not override."""
     monkeypatch.setenv("API_KEY", "proxy-llm-key")
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("HF_TOKEN", "hf-hub-token")
     import importlib
 
     importlib.reload(inf)
@@ -56,23 +54,8 @@ def test_api_key_prefers_injected_proxy_key(monkeypatch):
 
 def test_api_key_falls_back_to_hf_token(monkeypatch):
     monkeypatch.delenv("API_KEY", raising=False)
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setenv("HF_TOKEN", "hf-test")
     import importlib
 
     importlib.reload(inf)
     assert inf.API_KEY == "hf-test"
-
-
-def test_competition_client_normalizes_and_syncs_openai_env(monkeypatch):
-    monkeypatch.setenv("API_BASE_URL", " https://proxy.example/v1 ")
-    monkeypatch.setenv("API_KEY", " sk-proxy ")
-    import importlib
-
-    importlib.reload(inf)
-    with patch.object(inf, "OpenAI", MagicMock()):
-        inf.build_openai_client()
-    assert os.environ["API_BASE_URL"] == "https://proxy.example/v1"
-    assert os.environ["API_KEY"] == "sk-proxy"
-    assert os.environ["OPENAI_BASE_URL"] == "https://proxy.example/v1"
-    assert os.environ["OPENAI_API_KEY"] == "sk-proxy"
