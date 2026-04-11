@@ -12,8 +12,8 @@ def test_easy_perfect():
         "reason": "invoice mismatch",
         "finalize": True,
     }
-    assert grade_submission(task, sub) == 1.0
-    assert triage_reward_breakdown(task, sub).scalar == 1.0
+    assert grade_submission(task, sub) == 0.99
+    assert triage_reward_breakdown(task, sub).scalar == 0.99
 
 
 def test_medium_perfect():
@@ -25,7 +25,7 @@ def test_medium_perfect():
         "reason": "rbac",
         "finalize": True,
     }
-    assert abs(grade_submission(task, sub) - 1.0) < 1e-9
+    assert grade_submission(task, sub) == 0.99
 
 
 def test_hard_wrong_macro_safe():
@@ -53,4 +53,4 @@ def test_hard_perfect():
         "notify_manager": True,
         "finalize": True,
     }
-    assert grade_submission(task, sub) == 1.0
+    assert grade_submission(task, sub) == 0.99

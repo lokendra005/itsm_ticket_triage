@@ -1,4 +1,4 @@
-"""Deterministic agent graders: map submitted triage payloads to scores in [0.0, 1.0]."""
+"""Deterministic agent graders: map submitted triage payloads to scores in (0.0, 1.0)."""
 
 from __future__ import annotations
 
@@ -34,10 +34,15 @@ def _norm_bool(value: Any) -> Optional[bool]:
     return None
 
 
+def _clamp_score(raw: float) -> float:
+    """Clamp to strictly (0, 1) — validator rejects exactly 0.0 and 1.0."""
+    return max(0.01, min(0.99, raw))
+
+
 def grade_submission(task: TriageTaskSpec, submission: Optional[Dict[str, Any]]) -> float:
-    """Return aggregate score in [0, 1] for the final submission."""
+    """Return aggregate score in (0, 1) for the final submission."""
     if not submission:
-        return 0.0
+        return 0.01
 
     gold = task.gold
     parts: List[float] = []
@@ -71,8 +76,8 @@ def grade_submission(task: TriageTaskSpec, submission: Optional[Dict[str, Any]])
             parts.append(0.0)
 
     if not parts:
-        return 0.0
-    return sum(parts) / len(parts)
+        return 0.01
+    return _clamp_score(sum(parts) / len(parts))
 
 
 def triage_reward_breakdown(task: TriageTaskSpec, submission: Optional[Dict[str, Any]]) -> "TriageReward":
@@ -127,7 +132,7 @@ def triage_reward_breakdown(task: TriageTaskSpec, submission: Optional[Dict[str,
         weights.append(action_match)
     if "notify_manager" in gold:
         weights.append(notify_match)
-    scalar = max(0.0, min(1.0, sum(weights) / len(weights) + safety_penalty))
+    scalar = _clamp_score(sum(weights) / len(weights) + safety_penalty)
 
     return TriageReward(
         scalar=scalar,

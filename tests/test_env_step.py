@@ -22,7 +22,7 @@ def test_reset_and_finalize_easy(env):
     )
     assert o1.done is True
     assert o1.reward is not None
-    assert env.state.terminal_grader_score == 1.0
+    assert env.state.terminal_grader_score == 0.99
 
 
 def test_loop_penalty(env):
