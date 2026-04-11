@@ -1,11 +1,11 @@
 FROM python:3.11-slim
 
-# OpenEnv's LocalDockerProvider maps host_port:8000 inside the container.
-# HF Spaces injects PORT=7860. We default to 8000 for OpenEnv compatibility
-# and let HF override it via the PORT env var.
+# HF Spaces expects port 7860 (default). OpenEnv's LocalDockerProvider
+# maps host_port:8000; inference.py passes PORT=8000 via env_vars so
+# uvicorn listens on 8000 inside the container during grading.
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    PORT=8000
+    PORT=7860
 
 WORKDIR /app
 
@@ -18,9 +18,9 @@ COPY support_triage_env ./support_triage_env
 
 RUN pip install --no-cache-dir .
 
-EXPOSE 8000
+EXPOSE 7860
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD curl -fsS "http://127.0.0.1:${PORT}/health" >/dev/null || exit 1
 
-CMD sh -c 'uvicorn server.app:app --host 0.0.0.0 --port ${PORT:-8000}'
+CMD ["sh", "-c", "uvicorn server.app:app --host 0.0.0.0 --port ${PORT:-7860}"]

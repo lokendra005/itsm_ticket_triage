@@ -167,7 +167,11 @@ async def run_one_task(
 async def main() -> None:
     client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
 
-    env = await SupportTriageEnv.from_docker_image(IMAGE_NAME)
+    # LocalDockerProvider maps host_port:8000 inside the container.
+    # Pass PORT=8000 so uvicorn listens on 8000 (Dockerfile defaults to 7860 for HF Spaces).
+    env = await SupportTriageEnv.from_docker_image(
+        IMAGE_NAME, env_vars={"PORT": "8000"}
+    )
 
     try:
         for task in TASK_ORDER:
